@@ -1,0 +1,558 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UIS = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Camera = workspace.CurrentCamera
+
+local GUI_WIDTH = 320
+local PLAYER_CARD_H = 64
+local HEADER_H = 40
+local FOOTER_H = 48
+local PADDING = 10
+local CARD_SPACING = 6
+local PANEL_H = 360
+local THUMB_SIZE = Enum.ThumbnailSize.Size48x48
+local THUMB_TYPE = Enum.ThumbnailType.HeadShot
+
+local FREECAM_SPEED = 24
+local FREECAM_SHIFT_MULT = 3
+local FREECAM_SENS = 0.35
+local FREECAM_ZOOM_SPEED = 4
+
+local COLORS = {
+	bg          = Color3.fromRGB(45, 45, 45),
+	card        = Color3.fromRGB(60, 60, 60),
+	text        = Color3.fromRGB(255, 255, 255),
+	textDim     = Color3.fromRGB(185, 185, 185),
+	spectate    = Color3.fromRGB(80, 80, 80),
+	spectateAct = Color3.fromRGB(60, 60, 60),
+	closeBtn    = Color3.fromRGB(170, 55, 55),
+	closeBtnHov = Color3.fromRGB(200, 45, 45),
+	freecam     = Color3.fromRGB(60, 110, 175),
+	freecamAct  = Color3.fromRGB(40, 85, 145),
+	scrollBar   = Color3.fromRGB(90, 90, 90),
+	footer      = Color3.fromRGB(35, 35, 35),
+}
+
+local spectating = false
+local spectateTarget = nil
+local spectateConn = nil
+local cardCache = {}
+
+local freecamActive = false
+local freecamConn = nil
+local freecamYaw = 0
+local freecamPitch = 0
+local freecamTargetYaw = 0
+local freecamTargetPitch = 0
+local freecamFOV = 70
+local freecamTargetFOV = 70
+local freecamPos = Vector3.new(0, 0, 0)
+local freecamVelocity = Vector3.new(0, 0, 0)
+local frozenWalkspeed = nil
+local frozenJumpPower = nil
+local frozenJumpHeight = nil
+local jumpBlockConn = nil
+local scrollConn = nil
+
+local LERP_POS = 6
+local LERP_ROT = 14
+local LERP_FOV = 8
+local MOMENTUM_DECAY = 8
+
+local function style(obj, size, bold, dim)
+	obj.TextColor3 = dim and COLORS.textDim or COLORS.text
+	obj.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+	obj.TextSize = size or 13
+	obj.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	obj.TextStrokeTransparency = 0.35
+end
+
+local function getThumb(userId)
+	local ok, url = pcall(Players.GetUserThumbnailAsync, Players, userId, THUMB_TYPE, THUMB_SIZE)
+	return ok and url or ""
+end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PlayerListGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.IgnoreGuiInset = true
+ScreenGui.Parent = PlayerGui
+
+local KeybindFrame = Instance.new("Frame")
+KeybindFrame.Name = "KeybindFrame"
+KeybindFrame.Size = UDim2.new(0, 480, 0, 30)
+KeybindFrame.Position = UDim2.new(0.5, -240, 0, 14)
+KeybindFrame.BackgroundTransparency = 1
+KeybindFrame.Visible = false
+KeybindFrame.Parent = ScreenGui
+
+local KeybindLabel = Instance.new("TextLabel")
+KeybindLabel.Size = UDim2.new(1, 0, 1, 0)
+KeybindLabel.BackgroundTransparency = 1
+KeybindLabel.Text = "WASD - Move   Q - Down  E / Space - Up   Shift - Fast   Scroll - FOV    R - Exit"
+KeybindLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+KeybindLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+KeybindLabel.TextStrokeTransparency = 0
+KeybindLabel.Font = Enum.Font.GothamBold
+KeybindLabel.TextSize = 13
+KeybindLabel.TextXAlignment = Enum.TextXAlignment.Center
+KeybindLabel.TextYAlignment = Enum.TextYAlignment.Center
+KeybindLabel.Parent = KeybindFrame
+
+local Panel = Instance.new("Frame")
+Panel.Name = "Panel"
+Panel.Size = UDim2.new(0, GUI_WIDTH, 0, PANEL_H)
+Panel.Position = UDim2.new(0, 24, 0, 24)
+Panel.BackgroundColor3 = COLORS.bg
+Panel.BorderSizePixel = 0
+Panel.ClipsDescendants = false
+Panel.Parent = ScreenGui
+
+local panelCorner = Instance.new("UICorner")
+panelCorner.CornerRadius = UDim.new(0, 10)
+panelCorner.Parent = Panel
+
+local Header = Instance.new("Frame")
+Header.Name = "Header"
+Header.Size = UDim2.new(1, 0, 0, HEADER_H)
+Header.BackgroundColor3 = COLORS.bg
+Header.BorderSizePixel = 0
+Header.Parent = Panel
+
+local headerCorner = Instance.new("UICorner")
+headerCorner.CornerRadius = UDim.new(0, 10)
+headerCorner.Parent = Header
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, -HEADER_H, 1, 0)
+Title.Position = UDim2.new(0, 12, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "ao2's spycam"
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.TextColor3 = Color3.fromRGB(100, 180, 255)
+Title.TextStrokeColor3 = Color3.fromRGB(10, 40, 100)
+Title.TextStrokeTransparency = 0.2
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 15
+Title.Parent = Header
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 28, 0, 28)
+CloseBtn.Position = UDim2.new(1, -34, 0, 6)
+CloseBtn.BackgroundColor3 = COLORS.closeBtn
+CloseBtn.BorderSizePixel = 0
+CloseBtn.Text = "X"
+CloseBtn.Parent = Header
+style(CloseBtn, 13, true)
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 6)
+closeCorner.Parent = CloseBtn
+
+CloseBtn.MouseEnter:Connect(function()
+	TweenService:Create(CloseBtn, TweenInfo.new(0.15), {BackgroundColor3 = COLORS.closeBtnHov}):Play()
+end)
+CloseBtn.MouseLeave:Connect(function()
+	TweenService:Create(CloseBtn, TweenInfo.new(0.15), {BackgroundColor3 = COLORS.closeBtn}):Play()
+end)
+
+local ScrollFrame = Instance.new("ScrollingFrame")
+ScrollFrame.Name = "ScrollFrame"
+ScrollFrame.Size = UDim2.new(1, 0, 1, -(HEADER_H + FOOTER_H))
+ScrollFrame.Position = UDim2.new(0, 0, 0, HEADER_H)
+ScrollFrame.BackgroundTransparency = 1
+ScrollFrame.BorderSizePixel = 0
+ScrollFrame.ScrollBarThickness = 4
+ScrollFrame.ScrollBarImageColor3 = COLORS.scrollBar
+ScrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+ScrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+ScrollFrame.ClipsDescendants = true
+ScrollFrame.Parent = Panel
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, CARD_SPACING)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Parent = ScrollFrame
+
+local listPadding = Instance.new("UIPadding")
+listPadding.PaddingTop = UDim.new(0, PADDING)
+listPadding.PaddingBottom = UDim.new(0, PADDING)
+listPadding.PaddingLeft = UDim.new(0, PADDING)
+listPadding.PaddingRight = UDim.new(0, PADDING)
+listPadding.Parent = ScrollFrame
+
+local Footer = Instance.new("Frame")
+Footer.Name = "Footer"
+Footer.Size = UDim2.new(1, 0, 0, FOOTER_H)
+Footer.Position = UDim2.new(0, 0, 1, -FOOTER_H)
+Footer.BackgroundColor3 = COLORS.footer
+Footer.BorderSizePixel = 0
+Footer.ClipsDescendants = false
+Footer.Parent = Panel
+
+local footerCorner = Instance.new("UICorner")
+footerCorner.CornerRadius = UDim.new(0, 10)
+footerCorner.Parent = Footer
+
+local footerCap = Instance.new("Frame")
+footerCap.Size = UDim2.new(1, 0, 0, 10)
+footerCap.Position = UDim2.new(0, 0, 0, 0)
+footerCap.BackgroundColor3 = COLORS.footer
+footerCap.BorderSizePixel = 0
+footerCap.Parent = Footer
+
+local FreecamBtn = Instance.new("TextButton")
+FreecamBtn.Name = "FreecamBtn"
+FreecamBtn.Size = UDim2.new(1, -20, 0, 32)
+FreecamBtn.Position = UDim2.new(0, 10, 0.5, -16)
+FreecamBtn.BackgroundColor3 = COLORS.freecam
+FreecamBtn.BorderSizePixel = 0
+FreecamBtn.Text = "Freecam"
+FreecamBtn.Parent = Footer
+style(FreecamBtn, 13, true)
+
+local freecamCorner = Instance.new("UICorner")
+freecamCorner.CornerRadius = UDim.new(0, 7)
+freecamCorner.Parent = FreecamBtn
+
+FreecamBtn.MouseEnter:Connect(function()
+	if not freecamActive then
+		TweenService:Create(FreecamBtn, TweenInfo.new(0.15), {BackgroundColor3 = COLORS.freecamAct}):Play()
+	end
+end)
+FreecamBtn.MouseLeave:Connect(function()
+	if not freecamActive then
+		TweenService:Create(FreecamBtn, TweenInfo.new(0.15), {BackgroundColor3 = COLORS.freecam}):Play()
+	end
+end)
+
+local function freezeCharacter()
+	local char = LocalPlayer.Character
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		frozenWalkspeed = hum.WalkSpeed
+		frozenJumpPower = hum.JumpPower
+		frozenJumpHeight = hum.JumpHeight
+		hum.WalkSpeed = 0
+		hum.JumpPower = 0
+		hum.JumpHeight = 0
+	end
+	jumpBlockConn = UIS.InputBegan:Connect(function(input, gameProcessed)
+		if input.KeyCode == Enum.KeyCode.Space then
+			local h = char and char:FindFirstChildOfClass("Humanoid")
+			if h then h.Jump = false end
+		end
+	end)
+end
+
+local function unfreezeCharacter()
+	if jumpBlockConn then jumpBlockConn:Disconnect(); jumpBlockConn = nil end
+	local char = LocalPlayer.Character
+	if not char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum then
+		hum.WalkSpeed = frozenWalkspeed or 16
+		hum.JumpPower = frozenJumpPower or 50
+		hum.JumpHeight = frozenJumpHeight or 7.2
+	end
+	frozenWalkspeed = nil
+	frozenJumpPower = nil
+	frozenJumpHeight = nil
+end
+
+local function stopSpectating()
+	if spectateConn then spectateConn:Disconnect(); spectateConn = nil end
+	spectating = false
+	spectateTarget = nil
+	Camera.CameraType = Enum.CameraType.Custom
+	local char = LocalPlayer.Character
+	if char then
+		Camera.CameraSubject = char:FindFirstChildOfClass("Humanoid") or char:FindFirstChild("HumanoidRootPart")
+	end
+end
+
+local function startSpectating(player)
+	if spectating and spectateTarget == player then stopSpectating(); return end
+	stopSpectating()
+	spectating = true
+	spectateTarget = player
+
+	local function attach()
+		local char = player.Character
+		if not char then return end
+		Camera.CameraType = Enum.CameraType.Custom
+		Camera.CameraSubject = char:FindFirstChildOfClass("Humanoid") or char:FindFirstChild("HumanoidRootPart")
+	end
+
+	attach()
+	spectateConn = player.CharacterAdded:Connect(function() task.wait(0.1); attach() end)
+end
+
+local function stopFreecam()
+	freecamActive = false
+	if freecamConn then freecamConn:Disconnect(); freecamConn = nil end
+	if scrollConn then scrollConn:Disconnect(); scrollConn = nil end
+
+	UIS.MouseBehavior = Enum.MouseBehavior.Default
+	UIS.MouseIconEnabled = true
+
+	Camera.CameraType = Enum.CameraType.Custom
+	Camera.FieldOfView = 70
+
+	local char = LocalPlayer.Character
+	if char then
+		Camera.CameraSubject = char:FindFirstChildOfClass("Humanoid") or char:FindFirstChild("HumanoidRootPart")
+	end
+
+	unfreezeCharacter()
+
+	FreecamBtn.Text = "Freecam"
+	FreecamBtn.BackgroundColor3 = COLORS.freecam
+	KeybindFrame.Visible = false
+end
+
+local function startFreecam()
+	if spectating then stopSpectating() end
+
+	freecamActive = true
+	freecamPos = Camera.CFrame.Position
+	freecamVelocity = Vector3.new(0, 0, 0)
+
+	local rx, ry, _ = Camera.CFrame:ToEulerAnglesYXZ()
+	freecamPitch = rx
+	freecamTargetPitch = rx
+	freecamYaw = ry
+	freecamTargetYaw = ry
+	freecamFOV = Camera.FieldOfView
+	freecamTargetFOV = freecamFOV
+
+	Camera.CameraType = Enum.CameraType.Scriptable
+
+	task.defer(function()
+		UIS.MouseBehavior = Enum.MouseBehavior.LockCenter
+		UIS.MouseIconEnabled = false
+	end)
+
+	freezeCharacter()
+
+	FreecamBtn.Text = "Exit Freecam"
+	FreecamBtn.BackgroundColor3 = COLORS.freecamAct
+	KeybindFrame.Visible = true
+
+	scrollConn = UIS.InputChanged:Connect(function(input)
+		if not freecamActive then return end
+		if input.UserInputType == Enum.UserInputType.MouseWheel then
+			freecamTargetFOV = math.clamp(freecamTargetFOV - input.Position.Z * FREECAM_ZOOM_SPEED, 10, 120)
+		end
+	end)
+
+	freecamConn = RunService.RenderStepped:Connect(function(dt)
+		if not freecamActive then return end
+
+		local delta = UIS:GetMouseDelta()
+		freecamTargetYaw   = freecamTargetYaw   - delta.X * FREECAM_SENS * 0.022
+		freecamTargetPitch = math.clamp(freecamTargetPitch - delta.Y * FREECAM_SENS * 0.022, math.rad(-89), math.rad(89))
+
+		local lerpFactor = 1 - math.exp(-LERP_ROT * dt)
+		freecamYaw   = freecamYaw   + (freecamTargetYaw   - freecamYaw)   * lerpFactor
+		freecamPitch = freecamPitch + (freecamTargetPitch - freecamPitch) * lerpFactor
+
+		local rotation = CFrame.Angles(0, freecamYaw, 0) * CFrame.Angles(freecamPitch, 0, 0)
+
+		local moveDir = Vector3.new(0, 0, 0)
+		local speed = FREECAM_SPEED
+
+		if UIS:IsKeyDown(Enum.KeyCode.LeftShift) or UIS:IsKeyDown(Enum.KeyCode.RightShift) then
+			speed = speed * FREECAM_SHIFT_MULT
+		end
+		if UIS:IsKeyDown(Enum.KeyCode.W) then moveDir += Vector3.new(0, 0, -1) end
+		if UIS:IsKeyDown(Enum.KeyCode.S) then moveDir += Vector3.new(0, 0,  1) end
+		if UIS:IsKeyDown(Enum.KeyCode.A) then moveDir += Vector3.new(-1, 0, 0) end
+		if UIS:IsKeyDown(Enum.KeyCode.D) then moveDir += Vector3.new(1,  0, 0) end
+		if UIS:IsKeyDown(Enum.KeyCode.E) or UIS:IsKeyDown(Enum.KeyCode.Space) then
+			moveDir += Vector3.new(0, 1, 0)
+		end
+		if UIS:IsKeyDown(Enum.KeyCode.Q) then moveDir += Vector3.new(0, -1, 0) end
+
+		local targetVelocity = Vector3.new(0, 0, 0)
+		if moveDir.Magnitude > 0 then
+			local worldDir = CFrame.Angles(0, freecamYaw, 0):VectorToWorldSpace(moveDir.Unit)
+			targetVelocity = worldDir * speed
+		end
+
+		local velLerp = 1 - math.exp(-MOMENTUM_DECAY * dt)
+		freecamVelocity = freecamVelocity:Lerp(targetVelocity, velLerp)
+		freecamPos = freecamPos + freecamVelocity * dt
+
+		local fovLerp = 1 - math.exp(-LERP_FOV * dt)
+		freecamFOV = freecamFOV + (freecamTargetFOV - freecamFOV) * fovLerp
+
+		Camera.CFrame = CFrame.new(freecamPos) * rotation
+		Camera.FieldOfView = freecamFOV
+	end)
+end
+
+FreecamBtn.MouseButton1Click:Connect(function()
+	if freecamActive then stopFreecam() else startFreecam() end
+end)
+
+UIS.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if freecamActive and (input.KeyCode == Enum.KeyCode.R or input.KeyCode == Enum.KeyCode.Escape) then
+		stopFreecam()
+	end
+end)
+
+ScreenGui.AncestryChanged:Connect(function()
+	if not ScreenGui.Parent and freecamActive then stopFreecam() end
+end)
+
+CloseBtn.MouseButton1Click:Connect(function()
+	if freecamActive then stopFreecam() end
+	if spectating then stopSpectating() end
+	ScreenGui:Destroy()
+end)
+
+local function makeCard(player)
+	if cardCache[player.UserId] then return end
+
+	local Card = Instance.new("Frame")
+	Card.Name = "Card_" .. player.UserId
+	Card.Size = UDim2.new(1, 0, 0, PLAYER_CARD_H)
+	Card.BackgroundColor3 = COLORS.card
+	Card.BorderSizePixel = 0
+	Card.LayoutOrder = player.UserId
+	Card.Parent = ScrollFrame
+
+	local cardCorner = Instance.new("UICorner")
+	cardCorner.CornerRadius = UDim.new(0, 8)
+	cardCorner.Parent = Card
+
+	local Avatar = Instance.new("ImageLabel")
+	Avatar.Size = UDim2.new(0, 44, 0, 44)
+	Avatar.Position = UDim2.new(0, 10, 0.5, -22)
+	Avatar.BackgroundColor3 = COLORS.bg
+	Avatar.BorderSizePixel = 0
+	Avatar.Image = ""
+	Avatar.Parent = Card
+
+	local avatarCorner = Instance.new("UICorner")
+	avatarCorner.CornerRadius = UDim.new(0, 22)
+	avatarCorner.Parent = Avatar
+
+	task.spawn(function()
+		local url = getThumb(player.UserId)
+		if Avatar and Avatar.Parent then Avatar.Image = url end
+	end)
+
+	local NameBlock = Instance.new("Frame")
+	NameBlock.Size = UDim2.new(0, GUI_WIDTH - 44 - 90, 1, 0)
+	NameBlock.Position = UDim2.new(0, 64, 0, 0)
+	NameBlock.BackgroundTransparency = 1
+	NameBlock.Parent = Card
+
+	local DisplayName = Instance.new("TextLabel")
+	DisplayName.Size = UDim2.new(1, 0, 0, 22)
+	DisplayName.Position = UDim2.new(0, 0, 0.5, -22)
+	DisplayName.BackgroundTransparency = 1
+	DisplayName.Text = player.DisplayName
+	DisplayName.TextXAlignment = Enum.TextXAlignment.Left
+	DisplayName.TextTruncate = Enum.TextTruncate.AtEnd
+	DisplayName.Parent = NameBlock
+	style(DisplayName, 13, true)
+
+	local UserName = Instance.new("TextLabel")
+	UserName.Size = UDim2.new(1, 0, 0, 18)
+	UserName.Position = UDim2.new(0, 0, 0.5, 2)
+	UserName.BackgroundTransparency = 1
+	UserName.Text = "(" .. player.Name .. ")"
+	UserName.TextXAlignment = Enum.TextXAlignment.Left
+	UserName.TextTruncate = Enum.TextTruncate.AtEnd
+	UserName.Parent = NameBlock
+	style(UserName, 11, false, true)
+
+	if player ~= LocalPlayer then
+		local SpectateBtn = Instance.new("TextButton")
+		SpectateBtn.Name = "SpectateBtn"
+		SpectateBtn.Size = UDim2.new(0, 70, 0, 28)
+		SpectateBtn.Position = UDim2.new(1, -78, 0.5, -14)
+		SpectateBtn.BackgroundColor3 = COLORS.spectate
+		SpectateBtn.BorderSizePixel = 0
+		SpectateBtn.Text = "Spectate"
+		SpectateBtn.Parent = Card
+		style(SpectateBtn, 11, false)
+
+		local specCorner = Instance.new("UICorner")
+		specCorner.CornerRadius = UDim.new(0, 6)
+		specCorner.Parent = SpectateBtn
+
+		SpectateBtn.MouseEnter:Connect(function()
+			TweenService:Create(SpectateBtn, TweenInfo.new(0.15), {BackgroundColor3 = COLORS.spectateAct}):Play()
+		end)
+		SpectateBtn.MouseLeave:Connect(function()
+			local col = (spectateTarget == player) and COLORS.spectateAct or COLORS.spectate
+			TweenService:Create(SpectateBtn, TweenInfo.new(0.15), {BackgroundColor3 = col}):Play()
+		end)
+		SpectateBtn.MouseButton1Click:Connect(function()
+			if freecamActive then stopFreecam() end
+			startSpectating(player)
+			for _, card in pairs(cardCache) do
+				local btn = card:FindFirstChild("SpectateBtn")
+				if btn then btn.BackgroundColor3 = COLORS.spectate; btn.Text = "Spectate" end
+			end
+			if spectating and spectateTarget == player then
+				SpectateBtn.BackgroundColor3 = COLORS.spectateAct
+				SpectateBtn.Text = "Stop"
+			end
+		end)
+	end
+
+	cardCache[player.UserId] = Card
+end
+
+local function removeCard(player)
+	if cardCache[player.UserId] then
+		cardCache[player.UserId]:Destroy()
+		cardCache[player.UserId] = nil
+	end
+	if spectateTarget == player then stopSpectating() end
+end
+
+for _, player in ipairs(Players:GetPlayers()) do makeCard(player) end
+Players.PlayerAdded:Connect(makeCard)
+Players.PlayerRemoving:Connect(removeCard)
+
+local dragging = false
+local dragStart = nil
+local startPos = nil
+
+Header.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragStart = input.Position
+		startPos = Panel.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				dragging = false
+			end
+		end)
+	end
+end)
+
+UIS.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+			or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		Panel.Position = UDim2.new(
+			startPos.X.Scale, startPos.X.Offset + delta.X,
+			startPos.Y.Scale, startPos.Y.Offset + delta.Y
+		)
+	end
+end)
